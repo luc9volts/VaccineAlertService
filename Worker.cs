@@ -16,6 +16,7 @@ namespace VaccineAlertService
         private readonly Regex _regExpAge;
         private readonly Contact _contact;
         private readonly string[] _destinationPhones;
+        const int FIVEMINUTES = 300000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IOptions<Destination> destination)
         {
@@ -42,7 +43,7 @@ namespace VaccineAlertService
                 };
 
                 _logger.LogInformation("Worker running at: {time} result {result}", DateTimeOffset.Now, result);
-                await Task.Delay(300 * 1000, stoppingToken);
+                await Task.Delay(FIVEMINUTES, stoppingToken);
             }
         }
 
