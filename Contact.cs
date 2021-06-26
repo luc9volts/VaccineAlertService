@@ -2,6 +2,7 @@ using Twilio;
 using Twilio.Rest.Api.V2010.Account;
 using Twilio.Types;
 using System.Linq;
+using System;
 
 namespace VaccineAlertService
 {
@@ -15,22 +16,22 @@ namespace VaccineAlertService
             TwilioClient.Init(_contactSettings.AccountSid, _contactSettings.AuthToken);
         }
 
-        public string[] MakeCall(string[] destinationPhones)
+        public string MakeCall(string[] destinationPhones, string message)
         {
-            var xmlAudioToPlay = new Twiml($@"<?xml version='1.0' encoding='UTF-8'?>
-                                        <Response><Pause length='1'/>
-                                        <Play>{_contactSettings.UrlAudio}</Play>
+            var xmlToSay = new Twiml($@"<?xml version='1.0' encoding='UTF-8'?>
+                                        <Response>
+                                        <Say voice='alice' language='pt-BR'>{message}</Say>
                                         </Response>");
 
             return destinationPhones
-                            .Select(phone => CallResource.Create(twiml: xmlAudioToPlay,
+                            .Select(phone => CallResource.Create(twiml: xmlToSay,
                                                             from: new PhoneNumber(_contactSettings.OriginPhone),
                                                             to: new PhoneNumber(phone)))
                             .Select(call => call.Sid)
-                            .ToArray();
+                            .Aggregate((sid1, sid2) => $"{sid1},{sid2}");
         }
 
-        public string[] SendSMS(string text, string[] destinationPhones)
+        public string SendSMS(string text, string[] destinationPhones)
         {
             return destinationPhones
                             .Select(phone => MessageResource.Create(
@@ -38,7 +39,7 @@ namespace VaccineAlertService
                                                             from: new PhoneNumber(_contactSettings.OriginPhone),
                                                             to: new PhoneNumber(phone)))
                             .Select(message => message.Sid)
-                            .ToArray();
+                            .Aggregate((sid1, sid2) => $"{sid1},{sid2}");
         }
     }
 }

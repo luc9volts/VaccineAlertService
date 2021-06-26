@@ -17,7 +17,8 @@ namespace VaccineAlertService
     public class SearchSettings
     {
         public string UrlToSearch { get; set; }
-        public int AgeTarget { get; set; }
+        public int[] TargetAges { get; set; }
         public string Pattern { get; set; }
-    }     
+        public string[] TargetPhones { get; set; }
+    }
 }

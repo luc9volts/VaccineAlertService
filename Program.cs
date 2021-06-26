@@ -15,7 +15,6 @@ namespace VaccineAlertService
                 .ConfigureServices((hostContext, services) =>
                 {
                     services.Configure<AppSettings>(hostContext.Configuration.GetSection("AppSettings"));
-                    services.Configure<Destination>(hostContext.Configuration.GetSection("Destination"));
                     services.AddHostedService<Worker>();
                 });
     }
