@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using HtmlAgilityPack;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,7 +21,6 @@ namespace VaccineAlertService
         private readonly SearchSettings _searchSettings;
         private readonly ContactSettings _contactSettings;
         private readonly Regex _regExpAge;
-        const string FILENAME = "ALERTED_AGES.TXT";
         const int FIVEMINUTES = 300000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
@@ -34,66 +36,58 @@ namespace VaccineAlertService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var seacher = new Search();
-                var pageContent = await seacher.GetPageSourceAsync(_searchSettings.UrlToSearch);
-                var ageGroup = GetAgeGroupsAvailable(pageContent);
-                var targetAges = FilterAlreadyAlertedAges(_searchSettings.TargetAges);
+                var targetAges = _searchSettings.TargetAges;
+                var pageContent = await GetPageSourceAsync(_searchSettings.UrlToSearch);
+                var alertText = GetSecondDoseAlertText(pageContent, targetAges);
 
-                if (!targetAges.Any())
+                if (!string.IsNullOrEmpty(alertText))
                 {
+                    var contact = new Contact(_contactSettings);
+                    contact.MakeCall(_searchSettings.TargetPhones, alertText);
                     _appLifeTime.StopApplication();
                     break;
                 }
 
-                var coveredTargetAges = GetCoveredTargetAges(targetAges, ageGroup);
-                var contact = new Contact(_contactSettings);
-                var message = !coveredTargetAges.Any()
-                    ? $"Ainda não liberado para {string.Join(',', targetAges)}"
-                    : contact.MakeCall(_searchSettings.TargetPhones, $"{string.Join(" E ", coveredTargetAges.Select(c => c.Text))} LIBERADOS PARA CADASTRO." );
-
-                SaveAlreadyAlertedAges(coveredTargetAges.Select(c => c.TargetAge).ToArray());
+                var message = $"Ainda não liberado para {string.Join(',', targetAges)}";
                 _logger.LogInformation($"Worker running at: {DateTime.Now} result {message}");
                 await Task.Delay(FIVEMINUTES, stoppingToken);
             }
         }
 
-        private int[] FilterAlreadyAlertedAges(int[] targetAges)
+        private async Task<string> GetPageSourceAsync(string url)
         {
-            if (!File.Exists(FILENAME)) return targetAges;
-
-            var savedAgesFile = Array.ConvertAll(File.ReadAllText(FILENAME).Split(','), s => int.Parse(s));
-            return targetAges.Where(a => !savedAgesFile.Contains(a)).ToArray();
+            using (var client = new HttpClient())
+            {
+                var response = await client.GetAsync(url);
+                return await response.Content.ReadAsStringAsync();
+            }
         }
 
-        private void SaveAlreadyAlertedAges(int[] alertedAges)
+        private string GetSecondDoseAlertText(string pageContent, int[] targetAges)
         {
-            if (!alertedAges.Any())
-                return;
+            var doc = new HtmlDocument();
+            doc.LoadHtml(pageContent);
 
-            var comma = File.Exists(FILENAME) ? "," : string.Empty;
-            File.AppendAllText(FILENAME, $"{comma}{string.Join(',', alertedAges)}");
+            var prop = typeof(Match).GetProperty("Text", BindingFlags.NonPublic | BindingFlags.Instance);
+            var getter = prop.GetGetMethod(nonPublic: true);
+
+            return doc.DocumentNode
+                    .SelectSingleNode(@"//div[@id='GROUP2TABLE']")
+                    ?.Descendants("option")
+                    .Select(option => option.InnerText)
+                    .Select(optionText => _regExpAge.Matches(optionText))
+                    .Where(matchColl => matchColl.Any())
+                    .Where(matchColl => ContainsSomeTargetAge(matchColl, targetAges))
+                    .SelectMany(matchColl => matchColl.ToArray())
+                    .Select(match => getter.Invoke(match, null).ToString())
+                    .Aggregate(string.Empty, (result, item) => $"{result} E {item}");
         }
 
-        private IEnumerable<AgeGroup> GetAgeGroupsAvailable(string pageContent)
+        private bool ContainsSomeTargetAge(MatchCollection matchColl, int[] targetAges)
         {
-            return _regExpAge
-                .Matches(pageContent)
-                .Select(match => match.Groups.Values.ToArray())
-                .Select(group => new AgeGroup { Text = group[0].Value, Min = int.Parse(group[1].Value), Max = int.Parse(group[2].Value) })
-                .GroupBy(g => g.Text, (key, g) => new AgeGroup { Text = key, Min = g.First().Min, Max = g.First().Max })
-                .Distinct()
-                .ToList();
-        }
-        private IEnumerable<(int TargetAge, string Text, DateTime AlertDate)> GetCoveredTargetAges(int[] targetAges, IEnumerable<AgeGroup> ageGroup)
-        {
-            return targetAges
-                .Select(targetAge =>
-                {
-                    var a = ageGroup.FirstOrDefault(ag => ag.Min <= targetAge && ag.Max >= targetAge);
-                    return (TargetAge: targetAge, Text: a?.Text, AlertDate: DateTime.Now);
-                })
-                .Where(a => !string.IsNullOrEmpty(a.Text))
-                .ToList();
+            var firstMatchedAge = int.Parse(matchColl.First().Value);
+            var lastMatchedAge = int.Parse(matchColl.LastOrDefault().Value);
+            return targetAges.Any(target => target >= firstMatchedAge && target <= lastMatchedAge);
         }
     }
 }
