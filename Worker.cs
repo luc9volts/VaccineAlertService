@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
@@ -21,6 +19,7 @@ namespace VaccineAlertService
         private readonly SearchSettings _searchSettings;
         private readonly ContactSettings _contactSettings;
         private readonly Regex _regExpAge;
+        private readonly MethodInfo _getter;
         const int FIVEMINUTES = 300000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
@@ -30,6 +29,9 @@ namespace VaccineAlertService
             _searchSettings = appSettings.Value.SearchSettings;
             _contactSettings = appSettings.Value.ContactSettings;
             _regExpAge = new Regex(_searchSettings.Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+            var prop = typeof(Match).GetProperty("Text", BindingFlags.NonPublic | BindingFlags.Instance);
+            _getter = prop.GetGetMethod(nonPublic: true);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -68,19 +70,17 @@ namespace VaccineAlertService
             var doc = new HtmlDocument();
             doc.LoadHtml(pageContent);
 
-            var prop = typeof(Match).GetProperty("Text", BindingFlags.NonPublic | BindingFlags.Instance);
-            var getter = prop.GetGetMethod(nonPublic: true);
-
-            return doc.DocumentNode
+            var itemsFound = doc.DocumentNode
                     .SelectSingleNode(@"//div[@id='GROUP2TABLE']")
                     ?.Descendants("option")
                     .Select(option => option.InnerText)
                     .Select(optionText => _regExpAge.Matches(optionText))
                     .Where(matchColl => matchColl.Any())
                     .Where(matchColl => ContainsSomeTargetAge(matchColl, targetAges))
-                    .SelectMany(matchColl => matchColl.ToArray())
-                    .Select(match => getter.Invoke(match, null).ToString())
-                    .Aggregate(string.Empty, (result, item) => $"{result} E {item}");
+                    .Select(matchColl => matchColl.First())
+                    .Select(match => _getter.Invoke(match, null).ToString());
+
+            return string.Join(" E ", itemsFound);
         }
 
         private bool ContainsSomeTargetAge(MatchCollection matchColl, int[] targetAges)
