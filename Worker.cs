@@ -67,6 +67,13 @@ namespace VaccineAlertService
 
         private string GetSecondDoseAlertText(string pageContent, int[] targetAges)
         {
+            bool ContainsSomeTargetAge(MatchCollection matchColl)
+            {
+                var firstMatchedAge = int.Parse(matchColl.First().Value);
+                var lastMatchedAge = int.Parse(matchColl.LastOrDefault().Value);
+                return targetAges.Any(target => target >= firstMatchedAge && target <= lastMatchedAge);
+            }
+
             var doc = new HtmlDocument();
             doc.LoadHtml(pageContent);
 
@@ -76,18 +83,11 @@ namespace VaccineAlertService
                     .Select(option => option.InnerText)
                     .Select(optionText => _regExpAge.Matches(optionText))
                     .Where(matchColl => matchColl.Any())
-                    .Where(matchColl => ContainsSomeTargetAge(matchColl, targetAges))
+                    .Where(ContainsSomeTargetAge)
                     .Select(matchColl => matchColl.First())
                     .Select(match => _getter.Invoke(match, null).ToString());
 
             return string.Join(" E ", itemsFound);
-        }
-
-        private bool ContainsSomeTargetAge(MatchCollection matchColl, int[] targetAges)
-        {
-            var firstMatchedAge = int.Parse(matchColl.First().Value);
-            var lastMatchedAge = int.Parse(matchColl.LastOrDefault().Value);
-            return targetAges.Any(target => target >= firstMatchedAge && target <= lastMatchedAge);
         }
     }
 }
