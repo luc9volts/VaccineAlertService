@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Net.Http;
-using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,7 +18,6 @@ namespace VaccineAlertService
         private readonly SearchSettings _searchSettings;
         private readonly ContactSettings _contactSettings;
         private readonly Regex _regExpAge;
-        private readonly MethodInfo _getter;
         const int FIVEMINUTES = 300000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
@@ -29,30 +27,37 @@ namespace VaccineAlertService
             _searchSettings = appSettings.Value.SearchSettings;
             _contactSettings = appSettings.Value.ContactSettings;
             _regExpAge = new Regex(_searchSettings.Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-            var prop = typeof(Match).GetProperty("Text", BindingFlags.NonPublic | BindingFlags.Instance);
-            _getter = prop.GetGetMethod(nonPublic: true);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var targetAges = _searchSettings.TargetAges;
-                var pageContent = await GetPageSourceAsync(_searchSettings.UrlToSearch);
-                var alertText = GetSecondDoseAlertText(pageContent, targetAges);
-
-                if (!string.IsNullOrEmpty(alertText))
+                try
                 {
-                    var contact = new Contact(_contactSettings);
-                    contact.MakeCall(_searchSettings.TargetPhones, alertText);
-                    _appLifeTime.StopApplication();
-                    break;
-                }
+                    var targetAges = _searchSettings.TargetAges;
+                    var pageContent = await GetPageSourceAsync(_searchSettings.UrlToSearch);
+                    var alertText = GetSecondDoseAlertText(pageContent, targetAges);
 
-                var message = $"Ainda não liberado para {string.Join(',', targetAges)}";
-                _logger.LogInformation($"Worker running at: {DateTime.Now} result {message}");
-                await Task.Delay(FIVEMINUTES, stoppingToken);
+                    if (!string.IsNullOrEmpty(alertText))
+                    {
+                        var contact = new Contact(_contactSettings);
+                        contact.MakeCall(_searchSettings.TargetPhones, alertText);
+                        _appLifeTime.StopApplication();
+                        break;
+                    }
+
+                    var message = $"Ainda não liberado para {string.Join(',', targetAges)}";
+                    _logger.LogInformation($"Worker running at: {DateTime.Now} result {message}");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogInformation($"Worker running at: {DateTime.Now} result {ex.Message}");
+                }
+                finally
+                {
+                    await Task.Delay(FIVEMINUTES, stoppingToken);
+                }
             }
         }
 
@@ -67,10 +72,13 @@ namespace VaccineAlertService
 
         private string GetSecondDoseAlertText(string pageContent, int[] targetAges)
         {
-            bool ContainsSomeTargetAge(MatchCollection matchColl)
+            bool ContainsSomeTargetAge(Match match)
             {
-                var firstMatchedAge = int.Parse(matchColl.First().Value);
-                var lastMatchedAge = int.Parse(matchColl.LastOrDefault().Value);
+                var firstMatchedAge = int.Parse(match.Groups["FrtAge"].Value);
+                var lastMatchedAge = match.Groups["SecAge"].Success
+                                        ? int.Parse(match.Groups["SecAge"].Value)
+                                        : firstMatchedAge;
+
                 return targetAges.Any(target => target >= firstMatchedAge && target <= lastMatchedAge);
             }
 
@@ -81,11 +89,10 @@ namespace VaccineAlertService
                     .SelectSingleNode(@"//div[@id='GROUP2TABLE']")
                     ?.Descendants("option")
                     .Select(option => option.InnerText)
-                    .Select(optionText => _regExpAge.Matches(optionText))
-                    .Where(matchColl => matchColl.Any())
+                    .SelectMany(optionText => _regExpAge.Matches(optionText))
+                    .Where(match => match.Success)
                     .Where(ContainsSomeTargetAge)
-                    .Select(matchColl => matchColl.First())
-                    .Select(match => _getter.Invoke(match, null).ToString());
+                    .Select(match => match.Value.Trim());
 
             return string.Join(" E ", itemsFound);
         }
