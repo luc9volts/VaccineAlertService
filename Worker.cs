@@ -63,11 +63,9 @@ namespace VaccineAlertService
 
         private async Task<string> GetPageSourceAsync(string url)
         {
-            using (var client = new HttpClient())
-            {
-                var response = await client.GetAsync(url);
-                return await response.Content.ReadAsStringAsync();
-            }
+            using var client = new HttpClient();
+            var response = await client.GetAsync(url);
+            return await response.Content.ReadAsStringAsync();
         }
 
         private string GetSecondDoseAlertText(string pageContent, int[] targetAges)
