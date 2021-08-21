@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
@@ -15,18 +16,24 @@ namespace VaccineAlertService
     {
         private readonly ILogger<Worker> _logger;
         private readonly IHostApplicationLifetime _appLifeTime;
-        private readonly SearchSettings _searchSettings;
+        private readonly SearchSettings _settings;
         private readonly ContactSettings _contactSettings;
-        private readonly Regex _regExpAge;
+        private readonly IEnumerable<SearchParameters> _searches;
+        private readonly List<string> _alreadyAlerted;
         const int FIVEMINUTES = 300000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
         {
             _logger = logger;
             _appLifeTime = appLifeTime;
-            _searchSettings = appSettings.Value.SearchSettings;
+            _settings = appSettings.Value.SearchSettings;
             _contactSettings = appSettings.Value.ContactSettings;
-            _regExpAge = new Regex(_searchSettings.Pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            _alreadyAlerted = new List<string>();
+            _searches = new List<SearchParameters>
+            {
+                new SearchParameters(_settings.Pattern1Dose,"GROUP1TABLE",_settings.TargetAges1Dose, null),
+                new SearchParameters(_settings.Pattern2Dose,"GROUP2TABLE",_settings.TargetAges2Dose, new DateTime(2021,6,21))
+            };
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,20 +42,26 @@ namespace VaccineAlertService
             {
                 try
                 {
-                    var targetAges = _searchSettings.TargetAges;
-                    var pageContent = await GetPageSourceAsync(_searchSettings.UrlToSearch);
-                    var alertText = GetSecondDoseAlertText(pageContent, targetAges);
+                    var pageContent = await GetPageSourceAsync(_settings.UrlToSearch);
+                    var alerts = _searches
+                                .Select(s => GetAlertText(pageContent, s))
+                                .Where(a => !string.IsNullOrEmpty(a))
+                                .Where(a => !_alreadyAlerted.Contains(a))
+                                .ToList();
 
-                    if (!string.IsNullOrEmpty(alertText))
+                    foreach (var alert in alerts)
                     {
-                        var contact = new Contact(_contactSettings);
-                        contact.MakeCall(_searchSettings.TargetPhones, alertText);
+                        new Contact(_contactSettings).MakeCall(_settings.TargetPhones, alert);
+                        _alreadyAlerted.Add(alert);
+                    }
+
+                    if (_searches.Count() == _alreadyAlerted.Count())
+                    {
                         _appLifeTime.StopApplication();
                         break;
                     }
 
-                    var message = $"Ainda não liberado para {string.Join(',', targetAges)}";
-                    _logger.LogInformation($"Worker running at: {DateTime.Now} result {message}");
+                    _logger.LogInformation($"Worker running at: {DateTime.Now}");
                 }
                 catch (Exception ex)
                 {
@@ -68,28 +81,35 @@ namespace VaccineAlertService
             return await response.Content.ReadAsStringAsync();
         }
 
-        private string GetSecondDoseAlertText(string pageContent, int[] targetAges)
+        private string GetAlertText(string pageContent, SearchParameters search)
         {
-            bool ContainsSomeTargetAge(Match match)
+            bool ContainsTargetAges(Match match)
             {
                 var firstMatchedAge = int.Parse(match.Groups["FrtAge"].Value);
-                var lastMatchedAge = match.Groups["SecAge"].Success
-                                        ? int.Parse(match.Groups["SecAge"].Value)
-                                        : firstMatchedAge;
 
-                return targetAges.Any(target => target >= firstMatchedAge && target <= lastMatchedAge);
+                var lastMatchedAge = match.Groups["SecAge"].Success
+                                    ? int.Parse(match.Groups["SecAge"].Value)
+                                    : firstMatchedAge;
+
+                var doseDate = match.Groups["Day"].Success
+                                    ? DateTime.Parse($"{match.Groups["Day"].Value}/2021")
+                                    : DateTime.Now;
+
+                return search.Ages.Any(target => target >= firstMatchedAge
+                                                && target <= lastMatchedAge
+                                                && search.DoseDate <= doseDate);
             }
 
             var doc = new HtmlDocument();
             doc.LoadHtml(pageContent);
 
             var itemsFound = doc.DocumentNode
-                    .SelectSingleNode(@"//div[@id='GROUP2TABLE']")
+                    .SelectSingleNode(@$"//div[@id='{search.IdGroup}']")
                     ?.Descendants("option")
                     .Select(option => option.InnerText)
-                    .SelectMany(optionText => _regExpAge.Matches(optionText))
+                    .SelectMany(optionText => search.Pattern.Matches(optionText))
                     .Where(match => match.Success)
-                    .Where(ContainsSomeTargetAge)
+                    .Where(ContainsTargetAges)
                     .Select(match => match.Value.Trim());
 
             return string.Join(" E ", itemsFound);
