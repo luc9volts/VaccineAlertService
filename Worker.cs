@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
@@ -29,6 +30,7 @@ namespace VaccineAlertService
             _settings = appSettings.Value.SearchSettings;
             _contactSettings = appSettings.Value.ContactSettings;
             _alreadyAlerted = new List<string>();
+
             _searches = new List<SearchParameters>
             {
                 new SearchParameters(_settings.Pattern1Dose,"GROUP1TABLE",_settings.TargetAges1Dose, null),
@@ -85,19 +87,20 @@ namespace VaccineAlertService
         {
             bool ContainsTargetAges(Match match)
             {
-                var firstMatchedAge = int.Parse(match.Groups["FrtAge"].Value);
+                var g = match.Groups;
+                (int, int, DateTime) matchedValues = (g["FrtAge"].Success, g["SecAge"].Success, g["Day"].Success) switch
+                {
+                    (true, true, true) => (int.Parse(g["FrtAge"].Value), int.Parse(g["SecAge"].Value), DateTime.Parse($"{g["Day"].Value}/2021", new CultureInfo("pt-BR"))),
+                    (true, true, false) => (int.Parse(g["FrtAge"].Value), int.Parse(g["SecAge"].Value), new DateTime()),
+                    (true, false, true) => (int.Parse(g["FrtAge"].Value), int.Parse(g["FrtAge"].Value), DateTime.Parse($"{g["Day"].Value}/2021", new CultureInfo("pt-BR"))),
+                    (true, false, false) => (int.Parse(g["FrtAge"].Value), int.Parse(g["FrtAge"].Value), new DateTime()),
+                    _ => (0, 0, new DateTime())
+                };
 
-                var lastMatchedAge = match.Groups["SecAge"].Success
-                                    ? int.Parse(match.Groups["SecAge"].Value)
-                                    : firstMatchedAge;
-
-                var doseDate = match.Groups["Day"].Success
-                                    ? DateTime.Parse($"{match.Groups["Day"].Value}/2021")
-                                    : DateTime.Now;
-
-                return search.Ages.Any(target => target >= firstMatchedAge
-                                                && target <= lastMatchedAge
-                                                && search.DoseDate <= doseDate);
+                return search.Ages.Any(target => target >= matchedValues.Item1
+                                                && target <= matchedValues.Item2
+                                                && (search.DoseDate <= matchedValues.Item3
+                                                || !search.DoseDate.HasValue));
             }
 
             var doc = new HtmlDocument();
