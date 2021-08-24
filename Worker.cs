@@ -17,9 +17,7 @@ namespace VaccineAlertService
     {
         private readonly ILogger<Worker> _logger;
         private readonly IHostApplicationLifetime _appLifeTime;
-        private readonly SearchSettings _settings;
-        private readonly ContactSettings _contactSettings;
-        private readonly IEnumerable<SearchParameters> _searches;
+        private readonly IOptions<AppSettings> _appSettings;
         private readonly List<string> _alreadyAlerted;
         const int FIVEMINUTES = 300000;
 
@@ -27,15 +25,8 @@ namespace VaccineAlertService
         {
             _logger = logger;
             _appLifeTime = appLifeTime;
-            _settings = appSettings.Value.SearchSettings;
-            _contactSettings = appSettings.Value.ContactSettings;
+            _appSettings = appSettings;
             _alreadyAlerted = new List<string>();
-
-            _searches = new List<SearchParameters>
-            {
-                new SearchParameters(_settings.Pattern1Dose,"GROUP1TABLE",_settings.TargetAges1Dose, null),
-                new SearchParameters(_settings.Pattern2Dose,"GROUP2TABLE",_settings.TargetAges2Dose, new DateTime(2021,6,21))
-            };
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -44,20 +35,22 @@ namespace VaccineAlertService
             {
                 try
                 {
-                    var pageContent = await GetPageSourceAsync(_settings.UrlToSearch);
-                    var alerts = _searches
-                                .Select(s => GetAlertText(pageContent, s))
-                                .Where(a => !string.IsNullOrEmpty(a))
-                                .Where(a => !_alreadyAlerted.Contains(a))
+                    var ranges = await GetRangesAsync();
+
+                    var alerts = _appSettings.Value.Targets
+                                .SelectMany(t => GetAlerts(ranges, t))
+                                .Where(a => !string.IsNullOrEmpty(a.Text))
+                                .Where(a => !_alreadyAlerted.Contains(a.Text))
                                 .ToList();
 
                     foreach (var alert in alerts)
                     {
-                        new Contact(_contactSettings).MakeCall(_settings.TargetPhones, alert);
-                        _alreadyAlerted.Add(alert);
+                        var cs = _appSettings.Value.ContactSettings;
+                        new Contact(cs).MakeCall(alert.Target.Phones, alert.Text);
+                        _alreadyAlerted.Add(alert.Text);
                     }
 
-                    if (_searches.Count() == _alreadyAlerted.Count())
+                    if (_appSettings.Value.Targets.Count() == _alreadyAlerted.Count())
                     {
                         _appLifeTime.StopApplication();
                         break;
@@ -76,46 +69,30 @@ namespace VaccineAlertService
             }
         }
 
-        private async Task<string> GetPageSourceAsync(string url)
+        private async Task<IEnumerable<string>> GetRangesAsync()
         {
             using var client = new HttpClient();
-            var response = await client.GetAsync(url);
-            return await response.Content.ReadAsStringAsync();
-        }
-
-        private string GetAlertText(string pageContent, SearchParameters search)
-        {
-            bool ContainsTargetAges(Match match)
-            {
-                var g = match.Groups;
-                (int, int, DateTime) matchedValues = (g["FrtAge"].Success, g["SecAge"].Success, g["Day"].Success) switch
-                {
-                    (true, true, true) => (int.Parse(g["FrtAge"].Value), int.Parse(g["SecAge"].Value), DateTime.Parse($"{g["Day"].Value}/2021", new CultureInfo("pt-BR"))),
-                    (true, true, false) => (int.Parse(g["FrtAge"].Value), int.Parse(g["SecAge"].Value), new DateTime()),
-                    (true, false, true) => (int.Parse(g["FrtAge"].Value), int.Parse(g["FrtAge"].Value), DateTime.Parse($"{g["Day"].Value}/2021", new CultureInfo("pt-BR"))),
-                    (true, false, false) => (int.Parse(g["FrtAge"].Value), int.Parse(g["FrtAge"].Value), new DateTime()),
-                    _ => (0, 0, new DateTime())
-                };
-
-                return search.Ages.Any(target => target >= matchedValues.Item1
-                                                && target <= matchedValues.Item2
-                                                && (search.DoseDate <= matchedValues.Item3
-                                                || !search.DoseDate.HasValue));
-            }
-
+            var response = await client.GetAsync(_appSettings.Value.SearchSettings.UrlToSearch);
+            var pageContent = await response.Content.ReadAsStringAsync();
             var doc = new HtmlDocument();
             doc.LoadHtml(pageContent);
 
-            var itemsFound = doc.DocumentNode
-                    .SelectSingleNode(@$"//div[@id='{search.IdGroup}']")
+            return doc
+                    .DocumentNode
+                    .SelectNodes(@$"//div[starts-with(@id,'GROUP')]")
                     ?.Descendants("option")
                     .Select(option => option.InnerText)
-                    .SelectMany(optionText => search.Pattern.Matches(optionText))
-                    .Where(match => match.Success)
-                    .Where(ContainsTargetAges)
-                    .Select(match => match.Value.Trim());
+                    .ToList();
+        }
 
-            return string.Join(" E ", itemsFound);
+        private IEnumerable<(string Text, Target Target)> GetAlerts(IEnumerable<string> ranges, Target target)
+        {
+            return ranges
+                    .SelectMany(target.MatchPattern)
+                    .Where(match => match.Success)
+                    .Where(target.MatchDetails)
+                    .Select(match => (match.Value.Trim(), target))
+                    .ToList(); ;
         }
     }
 }
