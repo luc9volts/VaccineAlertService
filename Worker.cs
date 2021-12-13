@@ -17,7 +17,7 @@ namespace VaccineAlertService
         private readonly IHostApplicationLifetime _appLifeTime;
         private readonly IOptions<AppSettings> _appSettings;
         private readonly List<string> _alreadyAlerted;
-        const int FIVEMINUTES = 300000;
+        const int FIVEMINUTES = 60000;
 
         public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
         {
