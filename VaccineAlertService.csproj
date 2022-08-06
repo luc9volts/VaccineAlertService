@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
   <PropertyGroup>
-    <TargetFramework>net5.0</TargetFramework>
+    <TargetFramework>net6.0</TargetFramework>
     <UserSecretsId>dotnet-VaccineAlertService-E6B5EDCE-9D1B-47CB-A812-3C80D600D0F6</UserSecretsId>
   </PropertyGroup>
 
