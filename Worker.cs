@@ -11,21 +11,12 @@ using Microsoft.Extensions.Options;
 
 namespace VaccineAlertService
 {
-    public class Worker : BackgroundService
+    public class Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
+        : BackgroundService
     {
-        private readonly ILogger<Worker> _logger;
-        private readonly IHostApplicationLifetime _appLifeTime;
-        private readonly IOptions<AppSettings> _appSettings;
-        private readonly List<string> _alreadyAlerted;
-        const int FIVEMINUTES = 60000;
-
-        public Worker(ILogger<Worker> logger, IOptions<AppSettings> appSettings, IHostApplicationLifetime appLifeTime)
-        {
-            _logger = logger;
-            _appLifeTime = appLifeTime;
-            _appSettings = appSettings;
-            _alreadyAlerted = new List<string>();
-        }
+        private static readonly HttpClient Client = new();
+        private readonly List<string> _alreadyAlerted = [];
+        private const int FiveMinutesInMilliseconds = 60000;
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -35,7 +26,7 @@ namespace VaccineAlertService
                 {
                     var ranges = await GetRangesAsync();
 
-                    var alerts = _appSettings.Value.Targets
+                    var alerts = appSettings.Value.Targets
                                 .SelectMany(t => GetAlerts(ranges, t))
                                 .Where(a => !string.IsNullOrEmpty(a.Text))
                                 .Where(a => !_alreadyAlerted.Contains(a.Text))
@@ -43,34 +34,33 @@ namespace VaccineAlertService
 
                     foreach (var alert in alerts)
                     {
-                        var cs = _appSettings.Value.ContactSettings;
+                        var cs = appSettings.Value.ContactSettings;
                         new Contact(cs).MakeCall(alert.Target.Phones, alert.Text);
                         _alreadyAlerted.Add(alert.Text);
                     }
 
-                    if (_appSettings.Value.Targets.Count() == _alreadyAlerted.Count())
+                    if (appSettings.Value.Targets.Length == _alreadyAlerted.Count)
                     {
-                        _appLifeTime.StopApplication();
+                        appLifeTime.StopApplication();
                         break;
                     }
 
-                    _logger.LogInformation($"Worker running at: {DateTime.Now}");
+                    logger.LogInformation("Worker running at: {DateTime}", DateTime.Now);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogInformation($"Worker running at: {DateTime.Now} result {ex.Message}");
+                    logger.LogInformation("Worker running at: {DateTime} result {ExMessage}", DateTime.Now, ex.Message);
                 }
                 finally
                 {
-                    await Task.Delay(FIVEMINUTES, stoppingToken);
+                    await Task.Delay(FiveMinutesInMilliseconds, stoppingToken);
                 }
             }
         }
 
         private async Task<IEnumerable<string>> GetRangesAsync()
         {
-            using var client = new HttpClient();
-            var response = await client.GetAsync(_appSettings.Value.SearchSettings.UrlToSearch);
+            var response = await Client.GetAsync(appSettings.Value.SearchSettings.UrlToSearch);
             var pageContent = await response.Content.ReadAsStringAsync();
             var doc = new HtmlDocument();
             doc.LoadHtml(pageContent);
@@ -90,7 +80,7 @@ namespace VaccineAlertService
                     .Where(match => match.Success)
                     .Where(target.MatchDetails)
                     .Select(match => (match.Value.Trim(), target))
-                    .ToList(); ;
+                    .ToList(); 
         }
     }
 }
