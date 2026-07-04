@@ -68,7 +68,7 @@ namespace VaccineAlertService
             return doc
                     .DocumentNode
                     .SelectNodes(@$"//div[starts-with(@id,'GROUP')]")
-                    ?.Descendants("option")
+                    .Descendants("option")
                     .Select(option => option.InnerText)
                     .ToList();
         }
